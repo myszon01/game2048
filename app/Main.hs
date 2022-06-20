@@ -2,5 +2,5 @@ module Main where
 
 import Lib
 
-main :: IO ()
+--main :: IO ()
 main = someFunc

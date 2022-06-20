@@ -1,5 +1,6 @@
 
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Lib
     ( someFunc
@@ -13,9 +14,7 @@ import Data.List     (elemIndices, intercalate, transpose)
 import System.Random
 import Control.Monad.Reader
 import Control.Monad.State
-import Control.Monad
-import Control.Monad.State
-import Control.Monad.Reader
+import Control.Concurrent
 import Control.Monad.Trans.Maybe
 import qualified Text.Read as R
 
@@ -79,27 +78,63 @@ printBoard p = do
 --  clearScreen
   forM_ p (putStrLn . show)
   
-renderGame :: (MonadReader Config m, MonadState Game m, MonadIO m) => m ()
+renderGame :: (MonadState Game m, MonadIO m) => m ()
 renderGame = do
-  config <- ask
   game <- get
-  liftIO clearScreen
   liftIO $ forM_ (board game) (putStrLn . show)
   return ()
 
+-- broadcast
+data Event
+  = TickEvent
+  | KeyEvent Char deriving Show
+
+castKey :: Chan Event -> IO ()
+castKey chan = forever $ do
+  hSetEcho stdin False
+  c <- getChar
+  writeChan chan (KeyEvent c)
+
+castTick :: Chan Event -> IO ()
+castTick chan = forever $ do
+  threadDelay (2 * (10 ^ 5))
+  writeChan chan TickEvent  
 
 someFunc = do
   game <- initGame
   config <- initConfig
   setNoBuffering
-  runStateT (runReaderT play config) game
+  chan <- newChan
+  forkIO $ castTick chan
+  forkIO $ castKey chan
+  runStateT (play chan) game
+  
+updateBoard :: StateT Game IO ()
+updateBoard = do
+    game <- get
+    b1 <- liftIO $ addTile (board game) >>= addTile
+    put $ game {board = b1}
 
-play :: ReaderT Config (StateT Game IO) ()
-play = do
-  game <- get
-  b1 <- liftIO $ addTile (board game) >>= addTile
-  put $ game {board = b1}
+play :: Chan Event -> StateT Game IO ()
+play chan = forever $ do
+  event <- liftIO $ readChan chan
+--  game <- get
+--  b1 <- liftIO $ addTile (board game) >>= addTile
+--  put $ game {board = b1}
+--  x <- liftIO $ getChar
+--  renderGame
+--  c <- liftIO $ getChar
+--  renderGame
   renderGame
+  case event of
+      TickEvent   -> do liftIO clearScreen; renderGame; return ()
+      KeyEvent k  -> do
+        case k of
+          'w' -> updateBoard
+          's' -> updateBoard
+          'd' -> updateBoard
+          'a' -> updateBoard
+          _   -> return ()
 --  liftIO $ printBoard (board game)
 --  liftIO $ printBoard (board game)
 --  printBoard b1
