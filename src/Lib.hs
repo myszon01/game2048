@@ -1,6 +1,5 @@
 
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Lib
     ( someFunc
@@ -10,13 +9,12 @@ module Lib
 import System.IO
 import System.Console.ANSI
 import Control.Monad
-import Data.List     (elemIndices, intercalate, transpose)
+import Data.List     (elemIndices, transpose)
 import System.Random
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Concurrent
-import Control.Monad.Trans.Maybe
-import qualified Text.Read as R
+import System.Exit (die)
 
 -- util
 setNoBuffering :: IO ()
@@ -24,9 +22,6 @@ setNoBuffering = do
   hSetBuffering stdin NoBuffering
   hSetBuffering stdout NoBuffering
 -- util
-
-type Size       = (Int, Int)
-newtype Config  = Config {maxGrid :: Size} deriving Show
 
 type Board      = [[Int]]
 type Score      = Int
@@ -43,15 +38,6 @@ initGame = return $ Game
     board     = replicate 4 (replicate 4 0),
     score     = 0
   }
-
--- init
-initConfig :: IO Config
-initConfig = do
-  Just size <- getTerminalSize
-  return $ Config
-    {
-      maxGrid   = size
-    }
 
 -- Returns tuples of the indices of all of the empty tiles
 emptyTiles :: Board -> [(Int, Int)]
@@ -82,6 +68,8 @@ renderGame :: (MonadState Game m, MonadIO m) => m ()
 renderGame = do
   game <- get
   liftIO $ forM_ (board game) (putStrLn . show)
+  liftIO $ putStrLn " "
+  liftIO $ putStrLn $ "Score: " ++ show (score game)
   return ()
 
 -- broadcast
@@ -98,55 +86,82 @@ castKey chan = forever $ do
 castTick :: Chan Event -> IO ()
 castTick chan = forever $ do
   threadDelay (2 * (10 ^ 5))
-  writeChan chan TickEvent  
+  writeChan chan TickEvent
 
 someFunc = do
   game <- initGame
-  config <- initConfig
+  boardWithTiles <- liftIO $ addTile (board game) >>= addTile
+  let readyGame = game {board = boardWithTiles}
   setNoBuffering
   chan <- newChan
   forkIO $ castTick chan
   forkIO $ castKey chan
-  runStateT (play chan) game
-  
-updateBoard :: StateT Game IO ()
-updateBoard = do
-    game <- get
-    b1 <- liftIO $ addTile (board game) >>= addTile
-    put $ game {board = b1}
+  runStateT (play chan) readyGame
+
 
 play :: Chan Event -> StateT Game IO ()
 play chan = forever $ do
-  event <- liftIO $ readChan chan
---  game <- get
---  b1 <- liftIO $ addTile (board game) >>= addTile
---  put $ game {board = b1}
---  x <- liftIO $ getChar
---  renderGame
---  c <- liftIO $ getChar
---  renderGame
-  renderGame
-  case event of
-      TickEvent   -> do liftIO clearScreen; renderGame; return ()
-      KeyEvent k  -> do
-        case k of
-          'w' -> updateBoard
-          's' -> updateBoard
-          'd' -> updateBoard
-          'a' -> updateBoard
-          _   -> return ()
---  liftIO $ printBoard (board game)
---  liftIO $ printBoard (board game)
---  printBoard b1
+  game <- get
+  if stalled (board game) then do
+    liftIO $ die "Game Over. You Lose!"
+    else if completed (board game) then
+    liftIO $ die "You Won"
+      else do
+        event <- liftIO $ readChan chan
+        case event of
+            TickEvent   -> do liftIO clearScreen; renderGame; return ()
+            KeyEvent k  -> do
+              case k of
+                'w' -> updateBoard North
+                's' -> updateBoard South
+                'd' -> updateBoard East
+                'a' -> updateBoard West
+                _   -> return ()
 
 
---someFunc = runStateT play
+updateBoard :: Direction -> StateT Game IO ()
+updateBoard direction = do
+    game <- get
+    let b0 = slide direction (board game)
+    b1 <- liftIO $ addTile b0
+    if b0 == board game then
+      return ()
+      else do
+    let s1 = calculateScore b1
+    put $ game {board = b1, score = s1}
 
---deductChances :: ReaderT Secret (StateT Chance IO) ()
---deductChances = do
---  modify (subtract 1)
---  chances <- get
---  lift . lift . putStrLn $ "You have " ++ show chances ++ " chances."
---  if chances > 0
---  then process
---  else liftIO $ putStrLn "Sorry! You lose."
+calculateScore :: Board -> Int
+calculateScore b = sum $ map (\x -> sum x) b
+
+
+data Direction = North | East | South | West
+
+-- Tells us if the game is over because there are no valid moves left
+stalled :: Board -> Bool
+stalled b = all stalled' b && all stalled' (transpose b)
+  where stalled' row = notElem 0 row && noNeighbors row
+        noNeighbors [ ] = True
+        noNeighbors [_] = True
+        noNeighbors (x:y:zs)
+          | x == y    = False
+          | otherwise = noNeighbors (y:zs)
+
+-- Tells us if the player won the game by getting a 2048 tile
+completed :: Board -> Bool
+completed b = any (elem 2048) b
+
+slideLeft :: Board -> Board
+slideLeft = map slideRow
+  where slideRow [ ] = [ ]
+        slideRow [x] = [x]
+        slideRow (x:y:zs)
+          | x == 0 = slideRow (y : zs) ++ [0]
+          | y == 0 = slideRow (x : zs) ++ [0] -- So that things will combine when 0's are between them
+          | x == y = (x + y) : slideRow zs ++ [0]
+          | otherwise = x : slideRow (y : zs)
+
+slide :: Direction -> Board -> Board
+slide North = transpose . slideLeft . transpose
+slide East  = map reverse . slideLeft . map reverse
+slide South = transpose . map reverse . slideLeft . map reverse . transpose
+slide West  = slideLeft
